@@ -5,4 +5,4 @@ recordatorios.db
 .env
 __pycache__/
 *.pyc
-tempCodeRunnerFile.py
+bot/tempCodeRunnerFile.py
