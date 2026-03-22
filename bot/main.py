@@ -8,6 +8,24 @@ from telegram.ext import (
 )
 from config import TOKEN
 import logging
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass  # silencia los logs del servidor HTTP
+
+def iniciar_servidor_health():
+    server = HTTPServer(("0.0.0.0", 8000), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.daemon = True
+    thread.start()
+
+
 
 logging.basicConfig(
     level=logging.DEBUG,  # DEBUG mientras depuras; cambiar a INFO en producción
@@ -137,6 +155,9 @@ async def enviar_recordatorios(app):
 
 # Función principal
 async def main():
+
+    iniciar_servidor_health() 
+
     app = ApplicationBuilder().token(TOKEN).build()
 
     await configurar_comandos(app)
