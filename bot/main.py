@@ -7,7 +7,6 @@ from telegram.ext import (
     ContextTypes, ConversationHandler, filters, filters
 )
 from config import TOKEN
-import nest_asyncio
 import logging
 
 logging.basicConfig(
@@ -20,8 +19,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 logger.info("Arrancando Botminder")
-
-nest_asyncio.apply()  # evita conflictos si ya hay un loop corriendo
 
 # Estados de la conversación
 RECORDATORIO, FECHA, HORA = range(3)
@@ -158,18 +155,18 @@ async def main():
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("ver", ver))
 
-    # DEBUG: registrar handler que imprime todas las updates entrantes
     async def _debug_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print("DEBUG UPDATE:", update)
-
     app.add_handler(MessageHandler(filters.ALL, _debug_log))
 
-    # Lanzar tarea en segundo plano para enviar recordatorios
-    asyncio.create_task(enviar_recordatorios(app))
-
-    print("✅ Bot en ejecución... Presiona Ctrl+C para detener.")
-    await app.run_polling()
+    async with app:
+        await app.start()
+        asyncio.ensure_future(enviar_recordatorios(app))
+        await app.updater.start_polling()
+        print("✅ Bot en ejecución...")
+        await asyncio.Event().wait()
 
 # Arranque seguro
 if __name__ == "__main__":
     asyncio.run(main())
+
