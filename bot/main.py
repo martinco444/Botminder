@@ -1,3 +1,21 @@
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass
+
+def iniciar_servidor_health():
+    server = HTTPServer(("0.0.0.0", 8000), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+iniciar_servidor_health()
+
 import sqlite3
 import asyncio
 from datetime import datetime
@@ -8,23 +26,6 @@ from telegram.ext import (
 )
 from config import TOKEN
 import logging
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import threading
-
-class HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, format, *args):
-        pass  # silencia los logs del servidor HTTP
-
-def iniciar_servidor_health():
-    server = HTTPServer(("0.0.0.0", 8000), HealthHandler)
-    thread = threading.Thread(target=server.serve_forever)
-    thread.daemon = True
-    thread.start()
-
 
 
 logging.basicConfig(
@@ -154,9 +155,7 @@ async def enviar_recordatorios(app):
         await asyncio.sleep(segundos_restantes)
 
 # Función principal
-async def main():
-
-    iniciar_servidor_health() 
+async def main(): 
 
     app = ApplicationBuilder().token(TOKEN).build()
 
