@@ -2,8 +2,9 @@ import sqlite3
 import datetime
 import time
 from telegram import Bot
+from config import TOKEN
 
-TOKEN = "7763947493:AAGNbjziuiPEZTUmRpGGLCJx5Vo4-11Qvrc"  # Reemplaza con tu token real
+# Usa el TOKEN cargado por bot/config.py (que a su vez carga .env)
 bot = Bot(token=TOKEN)
 
 def verificar_recordatorios():
