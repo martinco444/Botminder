@@ -1,5 +1,9 @@
+import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+
+# Use the port provided by the environment (Render sets `PORT`)
+PORT = int(os.getenv("PORT", "8000"))
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -9,8 +13,8 @@ class HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
-def iniciar_servidor_health():
-    server = HTTPServer(("0.0.0.0", 8000), HealthHandler)
+def iniciar_servidor_health(port: int = PORT):
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
