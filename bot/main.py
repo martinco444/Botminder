@@ -1,74 +1,72 @@
 import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+import asyncio
+import logging
+from datetime import datetime
 
-# Use the port provided by the environment (Render sets `PORT`)
+import psycopg2
+from telegram import Update, BotCommand
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    ContextTypes, ConversationHandler, filters
+)
+from config import TOKEN
+
 PORT = int(os.getenv("PORT", "8000"))
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
+
     def log_message(self, format, *args):
         pass
+
 
 def iniciar_servidor_health(port: int = PORT):
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
+
 iniciar_servidor_health()
 
-import sqlite3
-import asyncio
-from datetime import datetime
-from telegram import Update, BotCommand
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    ContextTypes, ConversationHandler, filters, filters
-)
-from config import TOKEN
-import logging
-
-
 logging.basicConfig(
-    level=logging.DEBUG,  # DEBUG mientras depuras; cambiar a INFO en producción
+    level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     handlers=[
-        logging.StreamHandler(),               # muestra en terminal
-        logging.FileHandler("bot.log", encoding="utf-8")  # guarda en archivo
+        logging.StreamHandler(),
+        logging.FileHandler("bot.log", encoding="utf-8")
     ]
 )
+
 logger = logging.getLogger(__name__)
 logger.info("Arrancando Botminder")
 
-# Estados de la conversación
 RECORDATORIO, FECHA, HORA = range(3)
 
-# Conexión SQLite
-conn = sqlite3.connect("recordatorios.db", check_same_thread=False)
+if not DATABASE_URL:
+    raise ValueError("Falta la variable de entorno DATABASE_URL")
+
+conn = psycopg2.connect(DATABASE_URL)
+conn.autocommit = True
 cursor = conn.cursor()
-cursor.execute('''
+
+cursor.execute("""
 CREATE TABLE IF NOT EXISTS recordatorios (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    usuario_id INTEGER NOT NULL,
+    id SERIAL PRIMARY KEY,
+    usuario_id BIGINT NOT NULL,
     recordatorio TEXT NOT NULL,
     fecha TEXT NOT NULL,
     hora TEXT NOT NULL,
     enviado INTEGER DEFAULT 0
 );
-''')
-conn.commit()
+""")
 
-# Asegurar columna `enviado` si la tabla ya existía sin esa columna
-cursor.execute("PRAGMA table_info(recordatorios)")
-cols = [row[1] for row in cursor.fetchall()]
-if "enviado" not in cols:
-    cursor.execute("ALTER TABLE recordatorios ADD COLUMN enviado INTEGER DEFAULT 0")
-    conn.commit()
-
-# Comandos
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "¡Hola! Soy Botminder 🤖 tu bot de recordatorios 🕓.\nUsa /agregar para registrar uno o /ver para consultarlos."
@@ -95,10 +93,9 @@ async def recibir_hora(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hora = update.message.text
 
     cursor.execute(
-        "INSERT INTO recordatorios (usuario_id, recordatorio, fecha, hora) VALUES (?, ?, ?, ?)",
+        "INSERT INTO recordatorios (usuario_id, recordatorio, fecha, hora) VALUES (%s, %s, %s, %s)",
         (usuario_id, recordatorio, fecha, hora)
     )
-    conn.commit()
 
     await update.message.reply_text(f"✅ Recordatorio guardado para el {fecha} a las {hora}.")
     return ConversationHandler.END
@@ -110,7 +107,7 @@ async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ver(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usuario_id = update.effective_user.id
     cursor.execute(
-        "SELECT recordatorio, fecha, hora FROM recordatorios WHERE usuario_id = ? ORDER BY fecha, hora",
+        "SELECT recordatorio, fecha, hora FROM recordatorios WHERE usuario_id = %s ORDER BY fecha, hora",
         (usuario_id,)
     )
     resultados = cursor.fetchall()
@@ -132,8 +129,6 @@ async def configurar_comandos(app):
     ]
     await app.bot.set_my_commands(comandos)
 
-
-# Función que envía los recordatorios pendientes en segundo plano
 async def enviar_recordatorios(app):
     while True:
         ahora = datetime.now()
@@ -141,26 +136,28 @@ async def enviar_recordatorios(app):
         hora_actual = ahora.strftime("%H:%M")
 
         cursor.execute("""
-            SELECT id, usuario_id, recordatorio FROM recordatorios
-            WHERE fecha = ? AND hora = ? AND enviado = 0
+            SELECT id, usuario_id, recordatorio
+            FROM recordatorios
+            WHERE fecha = %s AND hora = %s AND enviado = 0
         """, (fecha_actual, hora_actual))
 
         pendientes = cursor.fetchall()
+
         for rid, uid, mensaje in pendientes:
             try:
                 await app.bot.send_message(chat_id=uid, text=f"⏰ Recordatorio:\n{mensaje}")
-                cursor.execute("UPDATE recordatorios SET enviado = 1 WHERE id = ?", (rid,))
-                conn.commit()
+                cursor.execute(
+                    "UPDATE recordatorios SET enviado = 1 WHERE id = %s",
+                    (rid,)
+                )
             except Exception as e:
-                print(f"Error al enviar recordatorio al usuario {uid}: {e}")
+                logger.error(f"Error al enviar recordatorio al usuario {uid}: {e}")
 
         ahora = datetime.now()
         segundos_restantes = 60 - ahora.second - ahora.microsecond / 1_000_000
         await asyncio.sleep(segundos_restantes)
 
-# Función principal
-async def main(): 
-
+async def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     await configurar_comandos(app)
@@ -179,18 +176,12 @@ async def main():
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("ver", ver))
 
-    async def _debug_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        print("DEBUG UPDATE:", update)
-    app.add_handler(MessageHandler(filters.ALL, _debug_log))
-
     async with app:
         await app.start()
-        asyncio.ensure_future(enviar_recordatorios(app))
+        asyncio.create_task(enviar_recordatorios(app))
         await app.updater.start_polling()
-        print("✅ Bot en ejecución...")
+        logger.info("✅ Bot en ejecución...")
         await asyncio.Event().wait()
 
-# Arranque seguro
 if __name__ == "__main__":
     asyncio.run(main())
-
