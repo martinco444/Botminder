@@ -99,11 +99,51 @@ async def ver(update: Update, context: ContextTypes.DEFAULT_TYPE):
             texto += f"📝 {r['recordatorio']}\n📅 {r['fecha']} 🕒 {r['hora']}\n\n"
         await update.message.reply_text(texto, parse_mode="Markdown")
 
+
+async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Devuelve el id de Telegram del usuario que ejecuta el comando.
+
+    Útil para comprobar que el `usuario_id` guardado en la BD es el correcto.
+    """
+    uid = update.effective_user.id
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    logger.info("whoami requested by user=%s chat=%s", uid, chat_id)
+    await update.message.reply_text(f"Tu id de Telegram es: {uid}")
+
+
+async def dump(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra los recordatorios guardados para el usuario (debug).
+
+    Lista los recordatorios (recordatorio, fecha, hora). No modifica nada.
+    """
+    usuario_id = update.effective_user.id
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    logger.info("dump requested by user=%s chat=%s", usuario_id, chat_id)
+    resultados = await obtener_recordatorios_por_usuario(usuario_id)
+    if not resultados:
+        await update.message.reply_text("No tienes recordatorios guardados.")
+        return
+    texto = "📋 *Tus recordatorios (debug):*\n\n"
+    for r in resultados:
+        texto += f"📝 {r['recordatorio']}\n📅 {r['fecha']} 🕒 {r['hora']}\n\n"
+    await update.message.reply_text(texto, parse_mode="Markdown")
+
+
+async def _debug_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Loggea la actualización completa para diagnóstico en Render."""
+    try:
+        payload = update.to_dict()
+    except Exception:
+        payload = str(update)
+    logger.debug("DEBUG UPDATE: %s", payload)
+
 async def configurar_comandos(app):
     comandos = [
         BotCommand("start", "Iniciar el bot"),
         BotCommand("agregar", "Agregar un nuevo recordatorio"),
         BotCommand("ver", "Ver recordatorios"),
+        BotCommand("whoami", "Mostrar tu id de Telegram (debug)"),
+        BotCommand("dump", "Mostrar tus recordatorios (debug)"),
         BotCommand("cancelar", "Cancelar operación"),
     ]
     await app.bot.set_my_commands(comandos)
@@ -115,13 +155,22 @@ async def enviar_recordatorios(app):
         fecha_actual = date.today()
         hora_actual = time(ahora.hour, ahora.minute)
 
-        pendientes = await obtener_pendientes(fecha_actual, hora_actual)
-        for row in pendientes:
-            try:
-                await app.bot.send_message(chat_id=row['usuario_id'], text=f"⏰ Recordatorio:\n{row['recordatorio']}")
-                await marcar_enviado(row['id'])
-            except Exception as e:
-                logger.error(f"Error al enviar recordatorio: {e}")
+        logger.debug("Scheduler wake: fecha=%s hora=%s", fecha_actual, hora_actual)
+        try:
+            pendientes = await obtener_pendientes(fecha_actual, hora_actual)
+            logger.info("Pendientes encontrados: %d", len(pendientes))
+            for row in pendientes:
+                rid = row['id']
+                uid = row['usuario_id']
+                mensaje = row['recordatorio']
+                try:
+                    await app.bot.send_message(chat_id=uid, text=f"⏰ Recordatorio:\n{mensaje}")
+                    await marcar_enviado(rid)
+                    logger.info("Enviado recordatorio id=%s a usuario=%s", rid, uid)
+                except Exception:
+                    logger.exception("Error al enviar recordatorio id=%s a usuario=%s", rid, uid)
+        except Exception:
+            logger.exception("Error al obtener o procesar recordatorios pendientes")
 
         segundos_restantes = 60 - ahora.second - ahora.microsecond / 1_000_000
         await asyncio.sleep(segundos_restantes)
@@ -145,6 +194,9 @@ async def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("ver", ver))
+    app.add_handler(CommandHandler("whoami", whoami))
+    app.add_handler(CommandHandler("dump", dump))
+    app.add_handler(MessageHandler(filters.ALL, _debug_log))
 
     async with app:
         await app.start()

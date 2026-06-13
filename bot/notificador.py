@@ -1,40 +1,49 @@
-import sqlite3
-import datetime
-import time
+"""Worker opcional para enviar recordatorios usando el pool de `database.py`.
+
+Este script puede usarse como proceso separado si no quieres ejecutar
+el worker dentro de `bot/main.py`. Usa las mismas funciones async del
+módulo `database` para evitar discrepancias.
+"""
+import asyncio
+import logging
+from datetime import datetime, date, time
+
 from telegram import Bot
 from config import TOKEN
+from database import init_db, obtener_pendientes, marcar_enviado
 
-# Usa el TOKEN cargado por bot/config.py (que a su vez carga .env)
+logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN)
 
-def verificar_recordatorios():
+
+async def verificar_recordatorios():
+    await init_db()
     while True:
-        ahora = datetime.datetime.now()
-        fecha_actual = ahora.strftime("%Y-%m-%d")
-        hora_actual = ahora.strftime("%H:%M")
+        ahora = datetime.now()
+        fecha_actual = date.today()
+        hora_actual = time(ahora.hour, ahora.minute)
 
-        conn = sqlite3.connect("recordatorios.db")
-        cursor = conn.cursor()
+        logger.debug("Notifier wake: %s %s", fecha_actual, hora_actual)
 
-        cursor.execute("""
-            SELECT id, user_id, mensaje FROM recordatorios
-            WHERE fecha = ? AND hora = ? AND enviado = 0
-        """, (fecha_actual, hora_actual))
+        try:
+            pendientes = await obtener_pendientes(fecha_actual, hora_actual)
+            logger.info("Pendientes encontrados: %d", len(pendientes))
 
-        recordatorios = cursor.fetchall()
+            for row in pendientes:
+                rid = row['id']
+                uid = row['usuario_id']
+                mensaje = row['recordatorio']
+                try:
+                    await bot.send_message(chat_id=uid, text=f"📌 Recordatorio:\n{mensaje}")
+                    await marcar_enviado(rid)
+                    logger.info("Enviado recordatorio id=%s a usuario=%s", rid, uid)
+                except Exception:
+                    logger.exception("Error al enviar recordatorio id=%s a usuario=%s", rid, uid)
+        except Exception:
+            logger.exception("Error comprobando recordatorios")
 
-        for recordatorio in recordatorios:
-            id_recordatorio, user_id, mensaje = recordatorio
+        await asyncio.sleep(60)
 
-            try:
-                bot.send_message(chat_id=user_id, text=f"📌 Recordatorio:\n{mensaje}")
-                print(f"Recordatorio enviado a {user_id}: {mensaje}")
 
-                # Marcar como enviado
-                cursor.execute("UPDATE recordatorios SET enviado = 1 WHERE id = ?", (id_recordatorio,))
-                conn.commit()
-            except Exception as e:
-                print(f"Error enviando mensaje: {e}")
-
-        conn.close()
-        time.sleep(60)  # Esperar un minuto
+if __name__ == "__main__":
+    asyncio.run(verificar_recordatorios())
