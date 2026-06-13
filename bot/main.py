@@ -162,6 +162,37 @@ async def test_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Error al enviar test: {e}")
 
 
+async def force_send_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Envía todos tus recordatorios no enviados independientemente de la fecha/hora."""
+    usuario_id = update.effective_user.id if update.effective_user else None
+    if not usuario_id:
+        await update.message.reply_text("No se pudo determinar tu usuario.")
+        return
+    await update.message.reply_text("Forzando envío de tus recordatorios pendientes...")
+    try:
+        resultados = await obtener_recordatorios_por_usuario(usuario_id)
+        pendientes = [r for r in resultados if not r.get('enviado')]
+        if not pendientes:
+            await update.message.reply_text("No tienes recordatorios pendientes.")
+            return
+        enviados = 0
+        for r in pendientes:
+            rid = r['id']
+            chat_id = r.get('chat_id') or usuario_id
+            mensaje = r['recordatorio']
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=f"⏰ Recordatorio:\n{mensaje}")
+                await marcar_enviado(rid)
+                enviados += 1
+            except Exception:
+                logger.exception("Error al enviar recordatorio personal id=%s", rid)
+
+        await update.message.reply_text(f"Enviados {enviados} recordatorios.")
+    except Exception as e:
+        logger.exception("Error en force_send_me: %s", e)
+        await update.message.reply_text(f"Error al procesar: {e}")
+
+
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Muestra conteos de la BD y hasta 20 pendientes para hoy.
 
@@ -204,6 +235,7 @@ async def configurar_comandos(app):
         BotCommand("whoami", "Mostrar tu id de Telegram (debug)"),
         BotCommand("dump", "Mostrar tus recordatorios (debug)"),
         BotCommand("status", "Mostrar estado DB y pendientes (admin)"),
+        BotCommand("force_send_me", "Forzar envío de tus recordatorios pendientes"),
         BotCommand("cancelar", "Cancelar operación"),
     ]
     await app.bot.set_my_commands(comandos)
@@ -319,6 +351,7 @@ async def main():
     app.add_handler(CommandHandler("force_send", force_send_cmd))
     app.add_handler(CommandHandler("test_send", test_send))
     app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("force_send_me", force_send_me))
     app.add_handler(MessageHandler(filters.ALL, _debug_log))
 
     async with app:
