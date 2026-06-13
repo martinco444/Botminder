@@ -60,6 +60,7 @@ async def recibir_fecha(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def recibir_hora(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usuario_id = update.effective_user.id
+    chat_id = update.effective_chat.id if update.effective_chat else usuario_id
     recordatorio = context.user_data["recordatorio"]
     fecha_txt = context.user_data["fecha"]
     hora_txt = update.message.text
@@ -68,7 +69,7 @@ async def recibir_hora(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fecha = datetime.strptime(fecha_txt, "%Y-%m-%d").date()
         hora = datetime.strptime(hora_txt, "%H:%M").time()
 
-        await agregar_recordatorio(usuario_id, recordatorio, fecha, hora)
+        await agregar_recordatorio(usuario_id, chat_id, recordatorio, fecha, hora)
         await update.message.reply_text(
             f"✅ Recordatorio guardado para el {fecha} a las {hora_txt}."
         )
@@ -161,14 +162,15 @@ async def enviar_recordatorios(app):
             logger.info("Pendientes encontrados: %d", len(pendientes))
             for row in pendientes:
                 rid = row['id']
-                uid = row['usuario_id']
+                uid = row.get('usuario_id')
+                chat_id = row.get('chat_id') or uid
                 mensaje = row['recordatorio']
                 try:
-                    await app.bot.send_message(chat_id=uid, text=f"⏰ Recordatorio:\n{mensaje}")
+                    await app.bot.send_message(chat_id=chat_id, text=f"⏰ Recordatorio:\n{mensaje}")
                     await marcar_enviado(rid)
-                    logger.info("Enviado recordatorio id=%s a usuario=%s", rid, uid)
+                    logger.info("Enviado recordatorio id=%s a usuario=%s chat=%s", rid, uid, chat_id)
                 except Exception:
-                    logger.exception("Error al enviar recordatorio id=%s a usuario=%s", rid, uid)
+                    logger.exception("Error al enviar recordatorio id=%s a usuario=%s chat=%s", rid, uid, chat_id)
         except Exception:
             logger.exception("Error al obtener o procesar recordatorios pendientes")
 
