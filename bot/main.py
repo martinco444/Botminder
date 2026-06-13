@@ -3,7 +3,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, date
 
 from telegram import Update, BotCommand
 from telegram.ext import (
@@ -145,6 +145,57 @@ async def force_send_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     enviados = await enviar_pendientes_una_vez(context.application, tolerance_seconds=59)
     await update.message.reply_text(f"Procesados {enviados} recordatorios.")
 
+
+async def test_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Envía un mensaje de prueba al chat actual para verificar entrega y token."""
+    chat = update.effective_chat.id if update.effective_chat else (update.effective_user.id if update.effective_user else None)
+    uid = update.effective_user.id if update.effective_user else None
+    logger.info("test_send requested by user=%s chat=%s", uid, chat)
+    if not chat:
+        await update.message.reply_text("No se pudo determinar el chat donde enviar el test.")
+        return
+    try:
+        await context.bot.send_message(chat_id=chat, text="✅ Test send: Mensaje de prueba desde Botminder.")
+        await update.message.reply_text("Test enviado. Revisa tu chat.")
+    except Exception as e:
+        logger.exception("test_send failed: %s", e)
+        await update.message.reply_text(f"Error al enviar test: {e}")
+
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Muestra conteos de la BD y hasta 20 pendientes para hoy.
+
+    Restringe el acceso si se ha configurado `ADMIN_USER_ID`.
+    """
+    uid = update.effective_user.id if update.effective_user else None
+    admin_allowed = os.getenv("ADMIN_USER_ID")
+    if admin_allowed and str(uid) != admin_allowed:
+        await update.message.reply_text("No autorizado para /status.")
+        return
+
+    try:
+        import database as _db
+        if not _db.PG_POOL:
+            await update.message.reply_text("DB no inicializada (PG_POOL missing)")
+            return
+
+        async with _db.PG_POOL.acquire() as conn:
+            total = await conn.fetchval("SELECT count(*) FROM recordatorios")
+            pending_rows = await conn.fetch(
+                "SELECT id, usuario_id, chat_id, recordatorio, fecha, hora FROM recordatorios WHERE fecha=$1 AND enviado=FALSE ORDER BY hora LIMIT 20",
+                date.today(),
+            )
+
+            lines = [f"DB total={total} pendientes_hoy={len(pending_rows)}"]
+            for r in pending_rows:
+                rec = (r['recordatorio'] or "").replace("\n", " ")[:120]
+                lines.append(f"id={r['id']} uid={r['usuario_id']} chat={r['chat_id']} {r['fecha']} {r['hora']} \"{rec}\"")
+
+            await update.message.reply_text("\n".join(lines))
+    except Exception as e:
+        logger.exception("Error in /status: %s", e)
+        await update.message.reply_text(f"Error al obtener estado: {e}")
+
 async def configurar_comandos(app):
     comandos = [
         BotCommand("start", "Iniciar el bot"),
@@ -152,6 +203,7 @@ async def configurar_comandos(app):
         BotCommand("ver", "Ver recordatorios"),
         BotCommand("whoami", "Mostrar tu id de Telegram (debug)"),
         BotCommand("dump", "Mostrar tus recordatorios (debug)"),
+        BotCommand("status", "Mostrar estado DB y pendientes (admin)"),
         BotCommand("cancelar", "Cancelar operación"),
     ]
     await app.bot.set_my_commands(comandos)
@@ -217,6 +269,21 @@ async def enviar_pendientes_una_vez(app, tolerance_seconds: int = 59) -> int:
 async def main():
     await init_db()  # ← CRÍTICO: inicializar el pool de asyncpg primero
     logger.info("init_db completado")
+    # DB sanity check: report total rows and pending for today
+    try:
+        import database as _db
+        if _db.PG_POOL:
+            async with _db.PG_POOL.acquire() as _conn:
+                total = await _conn.fetchval("SELECT count(*) FROM recordatorios")
+                pending_today = await _conn.fetchval(
+                    "SELECT count(*) FROM recordatorios WHERE fecha=$1 AND enviado=FALSE",
+                    date.today(),
+                )
+                logger.info("DB counts: total=%s pending_today=%s", total, pending_today)
+        else:
+            logger.error("DB sanity check: PG_POOL not initialized")
+    except Exception:
+        logger.exception("DB sanity check failed")
     # Sanity checks for environment
     db_env = bool(os.getenv("DATABASE_URL"))
     token_env = bool(os.getenv("TOKEN"))
@@ -226,6 +293,13 @@ async def main():
 
     app = ApplicationBuilder().token(TOKEN).build()
     await configurar_comandos(app)
+
+    # Verify bot token / Telegram connectivity early
+    try:
+        me = await app.bot.get_me()
+        logger.info("Bot get_me: id=%s username=%s", getattr(me, 'id', None), getattr(me, 'username', None))
+    except Exception:
+        logger.exception("Bot get_me failed; check TOKEN env var and network connectivity")
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("agregar", agregar)],
@@ -243,6 +317,8 @@ async def main():
     app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(CommandHandler("dump", dump))
     app.add_handler(CommandHandler("force_send", force_send_cmd))
+    app.add_handler(CommandHandler("test_send", test_send))
+    app.add_handler(CommandHandler("status", status))
     app.add_handler(MessageHandler(filters.ALL, _debug_log))
 
     async with app:
