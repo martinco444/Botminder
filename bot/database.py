@@ -94,16 +94,15 @@ async def obtener_pendientes(fecha_val: date, hora_val: time, tolerance_seconds:
 
     async with PG_POOL.acquire() as conn:
         if tolerance_seconds and tolerance_seconds > 0:
+            # Use a catch-up query: select reminders scheduled up to now()+tolerance_seconds.
+            # This ensures reminders missed due to clock/zone differences or downtime are sent.
             rows = await conn.fetch(
                 """
                 SELECT id, usuario_id, chat_id, recordatorio
                 FROM recordatorios
-                WHERE fecha=$1
-                  AND ABS(EXTRACT(EPOCH FROM (hora - $2::time))) <= $3
-                  AND enviado=FALSE
+                WHERE (fecha + hora) <= (now() + $1 * INTERVAL '1 second')
+                  AND enviado = FALSE
                 """,
-                fecha_val,
-                hora_val,
                 tolerance_seconds,
             )
         else:
