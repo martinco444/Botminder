@@ -44,7 +44,10 @@ async def init_db():
                     enviado BOOLEAN DEFAULT FALSE
                 );
             """)
-            # ensure chat_id populated for existing rows
+            # Ensure `chat_id` column exists and populate it for existing rows.
+            # Use ALTER TABLE IF NOT EXISTS to add the column when the table existed
+            # without that column (older deployments).
+            await conn.execute("ALTER TABLE recordatorios ADD COLUMN IF NOT EXISTS chat_id BIGINT")
             await conn.execute("UPDATE recordatorios SET chat_id = usuario_id WHERE chat_id IS NULL")
     else:
         # fallback to sqlite for local testing
