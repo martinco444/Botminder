@@ -61,14 +61,27 @@ async def recibir_fecha(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def recibir_hora(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usuario_id = update.effective_user.id
     recordatorio = context.user_data["recordatorio"]
-    fecha = context.user_data["fecha"]
-    hora = update.message.text
+    fecha_txt = context.user_data["fecha"]
+    hora_txt = update.message.text
+
     try:
+        fecha = datetime.strptime(fecha_txt, "%Y-%m-%d").date()
+        hora = datetime.strptime(hora_txt, "%H:%M").time()
+
         await agregar_recordatorio(usuario_id, recordatorio, fecha, hora)
-        await update.message.reply_text(f"✅ Recordatorio guardado para el {fecha} a las {hora}.")
+        await update.message.reply_text(
+            f"✅ Recordatorio guardado para el {fecha} a las {hora_txt}."
+        )
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Formato inválido. Usa fecha YYYY-MM-DD y hora HH:MM."
+        )
+        return HORA
     except Exception as e:
         logger.error(f"Error al guardar recordatorio: {e}")
-        await update.message.reply_text("❌ Error al guardar. Verifica el formato de fecha (YYYY-MM-DD) y hora (HH:MM).")
+        await update.message.reply_text("❌ Error al guardar el recordatorio.")
+        return ConversationHandler.END
+
     return ConversationHandler.END
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
