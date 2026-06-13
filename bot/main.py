@@ -5,67 +5,39 @@ import asyncio
 import logging
 from datetime import datetime
 
-import psycopg2
 from telegram import Update, BotCommand
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     ContextTypes, ConversationHandler, filters
 )
 from config import TOKEN
+from database import init_db, agregar_recordatorio, obtener_recordatorios_por_usuario, obtener_pendientes, marcar_enviado
 
 PORT = int(os.getenv("PORT", "8000"))
-DATABASE_URL = os.getenv("DATABASE_URL")
-
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
-
     def log_message(self, format, *args):
         pass
-
 
 def iniciar_servidor_health(port: int = PORT):
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
-
 iniciar_servidor_health()
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("bot.log", encoding="utf-8")
-    ]
+    handlers=[logging.StreamHandler()]  # ← Sin FileHandler para evitar crash en cloud
 )
-
 logger = logging.getLogger(__name__)
-logger.info("Arrancando Botminder")
 
 RECORDATORIO, FECHA, HORA = range(3)
-
-if not DATABASE_URL:
-    raise ValueError("Falta la variable de entorno DATABASE_URL")
-
-conn = psycopg2.connect(DATABASE_URL)
-conn.autocommit = True
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS recordatorios (
-    id SERIAL PRIMARY KEY,
-    usuario_id BIGINT NOT NULL,
-    recordatorio TEXT NOT NULL,
-    fecha TEXT NOT NULL,
-    hora TEXT NOT NULL,
-    enviado INTEGER DEFAULT 0
-);
-""")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -91,13 +63,12 @@ async def recibir_hora(update: Update, context: ContextTypes.DEFAULT_TYPE):
     recordatorio = context.user_data["recordatorio"]
     fecha = context.user_data["fecha"]
     hora = update.message.text
-
-    cursor.execute(
-        "INSERT INTO recordatorios (usuario_id, recordatorio, fecha, hora) VALUES (%s, %s, %s, %s)",
-        (usuario_id, recordatorio, fecha, hora)
-    )
-
-    await update.message.reply_text(f"✅ Recordatorio guardado para el {fecha} a las {hora}.")
+    try:
+        await agregar_recordatorio(usuario_id, recordatorio, fecha, hora)
+        await update.message.reply_text(f"✅ Recordatorio guardado para el {fecha} a las {hora}.")
+    except Exception as e:
+        logger.error(f"Error al guardar recordatorio: {e}")
+        await update.message.reply_text("❌ Error al guardar. Verifica el formato de fecha (YYYY-MM-DD) y hora (HH:MM).")
     return ConversationHandler.END
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -106,18 +77,13 @@ async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ver(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usuario_id = update.effective_user.id
-    cursor.execute(
-        "SELECT recordatorio, fecha, hora FROM recordatorios WHERE usuario_id = %s ORDER BY fecha, hora",
-        (usuario_id,)
-    )
-    resultados = cursor.fetchall()
-
+    resultados = await obtener_recordatorios_por_usuario(usuario_id)
     if not resultados:
         await update.message.reply_text("No tienes recordatorios guardados.")
     else:
         texto = "📋 *Tus recordatorios:*\n\n"
         for r in resultados:
-            texto += f"📝 {r[0]}\n📅 {r[1]} 🕒 {r[2]}\n\n"
+            texto += f"📝 {r['recordatorio']}\n📅 {r['fecha']} 🕒 {r['hora']}\n\n"
         await update.message.reply_text(texto, parse_mode="Markdown")
 
 async def configurar_comandos(app):
@@ -132,34 +98,25 @@ async def configurar_comandos(app):
 async def enviar_recordatorios(app):
     while True:
         ahora = datetime.now()
-        fecha_actual = ahora.strftime("%Y-%m-%d")
-        hora_actual = ahora.strftime("%H:%M")
+        from datetime import date, time
+        fecha_actual = date.today()
+        hora_actual = time(ahora.hour, ahora.minute)
 
-        cursor.execute("""
-            SELECT id, usuario_id, recordatorio
-            FROM recordatorios
-            WHERE fecha = %s AND hora = %s AND enviado = 0
-        """, (fecha_actual, hora_actual))
-
-        pendientes = cursor.fetchall()
-
-        for rid, uid, mensaje in pendientes:
+        pendientes = await obtener_pendientes(fecha_actual, hora_actual)
+        for row in pendientes:
             try:
-                await app.bot.send_message(chat_id=uid, text=f"⏰ Recordatorio:\n{mensaje}")
-                cursor.execute(
-                    "UPDATE recordatorios SET enviado = 1 WHERE id = %s",
-                    (rid,)
-                )
+                await app.bot.send_message(chat_id=row['usuario_id'], text=f"⏰ Recordatorio:\n{row['recordatorio']}")
+                await marcar_enviado(row['id'])
             except Exception as e:
-                logger.error(f"Error al enviar recordatorio al usuario {uid}: {e}")
+                logger.error(f"Error al enviar recordatorio: {e}")
 
-        ahora = datetime.now()
         segundos_restantes = 60 - ahora.second - ahora.microsecond / 1_000_000
         await asyncio.sleep(segundos_restantes)
 
 async def main():
-    app = ApplicationBuilder().token(TOKEN).build()
+    await init_db()  # ← CRÍTICO: inicializar el pool de asyncpg primero
 
+    app = ApplicationBuilder().token(TOKEN).build()
     await configurar_comandos(app)
 
     conv_handler = ConversationHandler(
