@@ -12,18 +12,24 @@ from telegram import Bot
 from config import TOKEN
 from database import init_db, obtener_pendientes, marcar_enviado
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[logging.StreamHandler()],
+)
 logger = logging.getLogger(__name__)
 bot = Bot(token=TOKEN)
 
 
 async def verificar_recordatorios():
     await init_db()
+    logger.info("Notifier inicializado")
     while True:
         ahora = datetime.now()
         fecha_actual = date.today()
         hora_actual = time(ahora.hour, ahora.minute)
 
-        logger.debug("Notifier wake: %s %s", fecha_actual, hora_actual)
+        logger.info("Notifier wake: %s %s", fecha_actual, hora_actual)
 
         try:
             pendientes = await obtener_pendientes(fecha_actual, hora_actual)
@@ -31,14 +37,15 @@ async def verificar_recordatorios():
 
             for row in pendientes:
                 rid = row['id']
-                uid = row['usuario_id']
+                uid = row.get('usuario_id')
+                chat_id = row.get('chat_id') or uid
                 mensaje = row['recordatorio']
                 try:
-                    await bot.send_message(chat_id=uid, text=f"📌 Recordatorio:\n{mensaje}")
+                    await bot.send_message(chat_id=chat_id, text=f"📌 Recordatorio:\n{mensaje}")
                     await marcar_enviado(rid)
-                    logger.info("Enviado recordatorio id=%s a usuario=%s", rid, uid)
+                    logger.info("Enviado recordatorio id=%s a usuario=%s chat=%s", rid, uid, chat_id)
                 except Exception:
-                    logger.exception("Error al enviar recordatorio id=%s a usuario=%s", rid, uid)
+                    logger.exception("Error al enviar recordatorio id=%s a usuario=%s chat=%s", rid, uid, chat_id)
         except Exception:
             logger.exception("Error comprobando recordatorios")
 

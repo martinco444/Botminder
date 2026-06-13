@@ -179,6 +179,7 @@ async def enviar_recordatorios(app):
 
 async def main():
     await init_db()  # ← CRÍTICO: inicializar el pool de asyncpg primero
+    logger.info("init_db completado")
 
     app = ApplicationBuilder().token(TOKEN).build()
     await configurar_comandos(app)
@@ -203,6 +204,7 @@ async def main():
     async with app:
         await app.start()
         asyncio.create_task(enviar_recordatorios(app))
+        logger.info("Scheduler task creada")
         await app.updater.start_polling()
         logger.info("✅ Bot en ejecución...")
         await asyncio.Event().wait()
