@@ -138,6 +138,13 @@ async def _debug_log(update: Update, context: ContextTypes.DEFAULT_TYPE):
         payload = str(update)
     logger.debug("DEBUG UPDATE: %s", payload)
 
+
+async def force_send_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler para forzar envío manual desde Telegram."""
+    await update.message.reply_text("Forzando envío de recordatorios ahora...")
+    enviados = await enviar_pendientes_una_vez(context.application, tolerance_seconds=59)
+    await update.message.reply_text(f"Procesados {enviados} recordatorios.")
+
 async def configurar_comandos(app):
     comandos = [
         BotCommand("start", "Iniciar el bot"),
@@ -158,7 +165,7 @@ async def enviar_recordatorios(app):
 
         logger.debug("Scheduler wake: fecha=%s hora=%s", fecha_actual, hora_actual)
         try:
-            pendientes = await obtener_pendientes(fecha_actual, hora_actual)
+            pendientes = await obtener_pendientes(fecha_actual, hora_actual, tolerance_seconds=59)
             logger.info("Pendientes encontrados: %d", len(pendientes))
             for row in pendientes:
                 rid = row['id']
@@ -177,9 +184,45 @@ async def enviar_recordatorios(app):
         segundos_restantes = 60 - ahora.second - ahora.microsecond / 1_000_000
         await asyncio.sleep(segundos_restantes)
 
+
+async def enviar_pendientes_una_vez(app, tolerance_seconds: int = 59) -> int:
+    """Procesa y envía recordatorios pendientes una sola vez. Devuelve el número enviado."""
+    ahora = datetime.now()
+    from datetime import date, time
+    fecha_actual = date.today()
+    hora_actual = time(ahora.hour, ahora.minute)
+
+    logger.info("Manual send: fecha=%s hora=%s tolerance=%s", fecha_actual, hora_actual, tolerance_seconds)
+    enviados = 0
+    try:
+        pendientes = await obtener_pendientes(fecha_actual, hora_actual, tolerance_seconds=tolerance_seconds)
+        logger.info("Pendientes encontrados (manual): %d", len(pendientes))
+        for row in pendientes:
+            rid = row['id']
+            uid = row.get('usuario_id')
+            chat_id = row.get('chat_id') or uid
+            mensaje = row['recordatorio']
+            try:
+                await app.bot.send_message(chat_id=chat_id, text=f"⏰ Recordatorio:\n{mensaje}")
+                await marcar_enviado(rid)
+                enviados += 1
+                logger.info("Enviado (manual) recordatorio id=%s a usuario=%s chat=%s", rid, uid, chat_id)
+            except Exception:
+                logger.exception("Error al enviar (manual) recordatorio id=%s a usuario=%s chat=%s", rid, uid, chat_id)
+    except Exception:
+        logger.exception("Error en envio manual de pendientes")
+
+    return enviados
+
 async def main():
     await init_db()  # ← CRÍTICO: inicializar el pool de asyncpg primero
     logger.info("init_db completado")
+    # Sanity checks for environment
+    db_env = bool(os.getenv("DATABASE_URL"))
+    token_env = bool(os.getenv("TOKEN"))
+    logger.info("ENV CHECK: DATABASE_URL present=%s TOKEN present=%s", db_env, token_env)
+    if not token_env:
+        logger.error("ENV ERROR: TOKEN no está configurado; el bot no podrá arrancar correctamente")
 
     app = ApplicationBuilder().token(TOKEN).build()
     await configurar_comandos(app)
@@ -199,6 +242,7 @@ async def main():
     app.add_handler(CommandHandler("ver", ver))
     app.add_handler(CommandHandler("whoami", whoami))
     app.add_handler(CommandHandler("dump", dump))
+    app.add_handler(CommandHandler("force_send", force_send_cmd))
     app.add_handler(MessageHandler(filters.ALL, _debug_log))
 
     async with app:

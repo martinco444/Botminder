@@ -18,12 +18,22 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
-bot = Bot(token=TOKEN)
+bot: Bot | None = None
 
 
 async def verificar_recordatorios():
     await init_db()
     logger.info("Notifier inicializado")
+    global bot
+    if not TOKEN:
+        logger.error("TOKEN no está configurado; el notifier no podrá enviar mensajes")
+        return
+    try:
+        bot = Bot(token=TOKEN)
+        logger.info("Bot inicializado en notificador")
+    except Exception:
+        logger.exception("No se pudo inicializar el Bot en notificador")
+        return
     while True:
         ahora = datetime.now()
         fecha_actual = date.today()
@@ -32,7 +42,7 @@ async def verificar_recordatorios():
         logger.info("Notifier wake: %s %s", fecha_actual, hora_actual)
 
         try:
-            pendientes = await obtener_pendientes(fecha_actual, hora_actual)
+            pendientes = await obtener_pendientes(fecha_actual, hora_actual, tolerance_seconds=59)
             logger.info("Pendientes encontrados: %d", len(pendientes))
 
             for row in pendientes:
@@ -41,6 +51,9 @@ async def verificar_recordatorios():
                 chat_id = row.get('chat_id') or uid
                 mensaje = row['recordatorio']
                 try:
+                    if not bot:
+                        logger.error("Bot no inicializado; saltando envio id=%s", rid)
+                        continue
                     await bot.send_message(chat_id=chat_id, text=f"📌 Recordatorio:\n{mensaje}")
                     await marcar_enviado(rid)
                     logger.info("Enviado recordatorio id=%s a usuario=%s chat=%s", rid, uid, chat_id)

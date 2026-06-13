@@ -1,12 +1,24 @@
-import sqlite3
+import asyncio
+from database import init_db
 
-conn = sqlite3.connect("recordatorios.db")
-cursor = conn.cursor()
 
-cursor.execute("SELECT * FROM recordatorios")
-filas = cursor.fetchall()
+async def main():
+    await init_db()
+    import database
 
-for fila in filas:
-    print(fila)
+    pg = database.PG_POOL
+    if not pg:
+        print("Postgres pool not initialized; DATABASE_URL is required")
+        return
 
-conn.close()
+    async with pg.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, usuario_id, chat_id, recordatorio, fecha, hora, enviado FROM recordatorios ORDER BY fecha,hora"
+        )
+        for r in rows:
+            print(dict(r))
+        print(f"Total filas: {len(rows)}")
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
